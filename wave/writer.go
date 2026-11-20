@@ -236,6 +236,30 @@ func (w *Writer) WriteFloat64(data []float64) error {
 	return nil
 }
 
+// writeRaw appends already-encoded little-endian audio data to the base
+// writer and updates the internal byte counter. 'data' must contain a whole
+// number of audio frames.
+//
+// This helper is used internally by the segmented recorder, which encodes
+// samples on the caller's behalf before splitting the resulting byte stream
+// on frame boundaries.
+func (w *Writer) writeRaw(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if len(data)%int(w.formatChunkData.BlockAlign) != 0 {
+		return ErrWriterInvalidByteCount
+	}
+
+	err := w.write(data)
+	if err != nil {
+		return err
+	}
+
+	w.dataBytes += uint32(len(data))
+	return nil
+}
+
 // write is a common helper for most of the WriteXXX
 // methods declared above.
 func (w *Writer) write(data any) error {
@@ -251,7 +275,7 @@ func (w *Writer) write(data any) error {
 	if err != nil {
 		return err
 	}
-	err = binary.Write(w.baseWriter, binary.LittleEndian, data)
+	err = binary.Write(shortWriteDetector{w.baseWriter}, binary.LittleEndian, data)
 	if err != nil {
 		return err
 	}
@@ -309,9 +333,12 @@ func (w *Writer) Flush() error {
 	// Add another byte to the data chunk for padding (if necessary)
 	padding := w.dataBytes & 1
 	if padding != 0 {
-		_, err := w.baseWriter.Write(make([]byte, 1))
+		n, err := w.baseWriter.Write(make([]byte, 1))
 		if err != nil {
 			return err
+		}
+		if n != 1 {
+			return io.ErrShortWrite
 		}
 	}
 

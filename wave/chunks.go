@@ -38,7 +38,11 @@ func (c Chunk) Serialize() []byte {
 }
 
 func (c Chunk) WriteTo(w io.Writer) (int64, error) {
-	n, err := w.Write(c.Serialize())
+	data := c.Serialize()
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
 	return int64(n), err
 }
 

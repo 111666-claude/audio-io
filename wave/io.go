@@ -10,6 +10,21 @@ var (
 	ErrIOInvalid24BitOutputSize = errors.New("length of output does not equal len(input) / 3")
 )
 
+// shortWriteDetector wraps an io.Writer and converts a short write with no
+// error into io.ErrShortWrite. Some helpers in the standard library (e.g.
+// binary.Write) do not perform this check themselves.
+type shortWriteDetector struct {
+	w io.Writer
+}
+
+func (d shortWriteDetector) Write(p []byte) (int, error) {
+	n, err := d.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
 // WriteMany is a general extension of the io.Writer interface that allows
 // multiple buffers to be written a single writer in series.
 func WriteMany(w io.Writer, buffers ...[]byte) (int, error) {
@@ -48,6 +63,9 @@ func WritePackedInt24(w io.Writer, data []int32) (int, error) {
 		totalBytesWritten += n
 		if err != nil {
 			return totalBytesWritten, err
+		}
+		if n != len(tmp) {
+			return totalBytesWritten, io.ErrShortWrite
 		}
 	}
 	return totalBytesWritten, nil

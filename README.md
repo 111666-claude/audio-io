@@ -27,6 +27,12 @@ developers to efficiently work with audio data. Key features include:
       `float32`, and `float64` audio formats
   * Interleavers/deinterleavers
     - Used to simplify the process of working with multi-channel audio files
+  * A segmented recorder for long-running captures
+    - Splits a live sample stream into a sequence of `.wav` files of a chosen
+      duration, cutting only on complete audio frames
+    - Writes a JSON manifest recording the start frame and frame count of each
+      segment so the pieces can be concatenated back into the original stream
+    - Completed segments are always valid, even if a later segment fails
 
 ## Examples
 Several complete examples that demonstrate how to use this library are included
@@ -187,6 +193,96 @@ native 24-bit integer type, so we use `int32` as a container type with the
 understanding that values are expected to fall in the range [-8388608, 8388607]. 
 The library will pack and unpack 24-bit integers (mapping to 3-byte sequences) 
 as needed.
+
+## Segmented recording
+For long-running captures (e.g. recording a venue for hours), it is often
+preferable to store audio as a series of `.wav` files rather than one giant
+file. `wave.SegmentRecorder` accepts a streaming sample input, a target segment
+duration, and an output directory, and writes numbered `.wav` files plus a
+`manifest.json` index.
+
+```go
+package main
+
+import (
+	"time"
+
+	"github.com/jonchammer/audio-io/wave"
+)
+
+func main() {
+	// NOTE: This example ignores error handling for the sake of brevity.
+
+	format := wave.SegmentFormat{
+		SampleType:   wave.SampleTypeInt16,
+		FrameRate:    48000,
+		ChannelCount: 2,
+	}
+
+	// Every segment will contain 10 minutes of audio (rounded down to a whole
+	// number of frames). The final segment may be shorter.
+	recorder, _ := wave.NewSegmentRecorder("/recordings", format, 10*time.Minute)
+	defer func() {
+		_ = recorder.Finish() // finalizes the last segment and the manifest
+	}()
+
+	// Write samples as they arrive from the capture device. Calls do not need
+	// to be frame-aligned: a trailing partial frame is buffered until the rest
+	// of that frame arrives.
+	for block := range captureDevice {
+		_ = recorder.WriteInt16(block)
+	}
+}
+```
+
+The output directory then contains:
+
+```text
+recordings/
+  manifest.json
+  segment-000001.wav
+  segment-000002.wav
+  ...
+```
+
+`manifest.json` records the shared audio format, the configured segment length,
+and, for each completed segment, its file name, starting frame (`startFrame`),
+starting sample (`startSample`), frame count, sample count, and data size. To
+rebuild the original stream, open the segments in order with `wave.NewReader`
+and concatenate their samples. Because cuts happen only between complete
+frames, the result is sample-for-sample identical to the input.
+
+Behavior worth knowing about:
+
+  * **Frame alignment.** Samples are buffered until a complete frame is
+    available, so a `WriteInt16` call (or a byte stream passed to `WriteRaw`)
+    can end mid-frame without losing data. If the input ends mid-frame,
+    `Finish` keeps every complete frame, marks the manifest as incomplete, and
+    returns `ErrSegmentPartialFrame`.
+  * **Atomic progression.** A segment is flushed, synced, and closed, and the
+    manifest is atomically replaced, before the next segment is started. A disk
+    or write failure therefore never invalidates previously completed segments;
+    the failed segment is removed and the manifest keeps listing only the good
+    ones.
+  * **Short writes and disk errors.** `io.ErrShortWrite` and filesystem errors
+    are reported from the write call that encountered them, and the recorder
+    rejects all subsequent writes.
+  * **Cancellation.** `Cancel` (or a context passed with `WithContext`) stops
+    the recording, removes the in-progress segment, and leaves completed
+    segments and the manifest intact with `cancelled` set to `true`.
+  * **Invalid durations.** Zero or negative durations return
+    `ErrSegmentInvalidDuration`. A positive duration shorter than a single
+    frame returns `ErrSegmentDurationTooSmall`. A duration whose segment could
+    not be represented as a `.wav` file (the `data` chunk size is 32-bit)
+    returns `ErrSegmentDurationTooLong`; this does not limit the total
+    recording length, only the length of an individual segment.
+  * **Format changes.** The format is fixed when the recorder is created. If a
+    device reports a different format mid-recording, `WriteBlock` rejects that
+    block with `ErrSegmentFormatMismatch`; start a new recording for the new
+    format.
+  * **Existing files are never overwritten.** Segment files are created
+    exclusively, and the constructor refuses to start if a manifest already
+    exists in the output directory.
 
 ## Developer Information
 

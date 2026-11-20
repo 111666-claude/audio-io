@@ -4,6 +4,7 @@ package wave
 
 import (
 	"fmt"
+	"strings"
 )
 
 // References
@@ -110,4 +111,35 @@ func (s SampleType) String() string {
 	default:
 		return fmt.Sprintf("SampleType(%d)", s)
 	}
+}
+
+// MarshalText implements encoding.TextMarshaler. Sample types are represented
+// by their human-readable names (e.g. "Int16"), which makes metadata files
+// such as the segmented recorder's manifest easier to read.
+func (s SampleType) MarshalText() ([]byte, error) {
+	if !s.IsValid() {
+		return nil, fmt.Errorf("invalid sample type: %d", int(s))
+	}
+	return []byte(s.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SampleType) UnmarshalText(text []byte) error {
+	switch strings.ToLower(string(text)) {
+	case "uint8":
+		*s = SampleTypeUint8
+	case "int16":
+		*s = SampleTypeInt16
+	case "int24":
+		*s = SampleTypeInt24
+	case "int32":
+		*s = SampleTypeInt32
+	case "float32":
+		*s = SampleTypeFloat32
+	case "float64":
+		*s = SampleTypeFloat64
+	default:
+		return fmt.Errorf("unknown sample type: %q", text)
+	}
+	return nil
 }
